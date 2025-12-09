@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API测试页面</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-3xl">
+        <h1 class="text-2xl font-bold mb-6 text-center">EdgeFn API 测试</h1>
+        
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-lg font-semibold mb-4">API 配置</h2>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">API 密钥</label>
+                <input type="text" id="apiKey" class="w-full border border-gray-300 rounded-md p-2" value="sk-pM2ZfREbehcfwgm12cEeB5FdA2E1408c87E9B5E0319cB947">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">模型</label>
+                <input type="text" id="model" class="w-full border border-gray-300 rounded-md p-2" value="DeepSeek-R1-0528-Qwen3-8B">
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-lg font-semibold mb-4">测试消息</h2>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">用户问题</label>
+                <textarea id="userQuestion" class="w-full border border-gray-300 rounded-md p-2" rows="3">你好，请问如何解决登录失败的问题？</textarea>
+            </div>
+            <button id="testButton" class="bg-primary text-white px-4 py-2 rounded-md hover:bg-primary/90 transition-colors">
+                <i class="fa fa-paper-plane mr-2"></i>发送测试
+            </button>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-lg p-6">
+            <h2 class="text-lg font-semibold mb-4">测试结果</h2>
+            <div id="testResults" class="border border-gray-200 rounded-md p-4 min-h-[200px] bg-gray-50">
+                <p class="text-gray-500">点击发送测试后查看结果...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('testButton').addEventListener('click', async () => {
+            const testResults = document.getElementById('testResults');
+            const apiKey = document.getElementById('apiKey').value;
+            const model = document.getElementById('model').value;
+            const userQuestion = document.getElementById('userQuestion').value;
+            
+            testResults.innerHTML = '<p class="text-blue-500">正在测试API连接...</p>';
+            
+            try {
+                const apiUrl = 'https://api.edgefn.net/v1/chat/completions';
+                
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            { role: 'system', content: '你是企业智能客服助手，专门解答报错问题和提供解决方案。' },
+                            { role: 'user', content: userQuestion }
+                        ]
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`API请求失败：${response.status} ${response.statusText} - ${errorText}`);
+                }
+                
+                const data = await response.json();
+                
+                testResults.innerHTML = `
+                    <div class="mb-4">
+                        <h3 class="font-semibold text-lg mb-2">API响应成功！</h3>
+                        <div class="bg-green-50 border-l-4 border-green-500 p-3 mb-4">
+                            <p class="text-green-800">状态码: ${response.status} ${response.statusText}</p>
+                        </div>
+                        
+                        <h4 class="font-medium mb-2">返回数据格式:</h4>
+                        <pre class="bg-gray-100 p-3 rounded-md overflow-auto max-h-60 text-sm">${JSON.stringify(data, null, 2)}</pre>
+                        
+                        <h4 class="font-medium mt-4 mb-2">AI回复内容:</h4>
+                        <div class="bg-gray-100 p-3 rounded-md">
+                            <p>${data.choices[0].message.content.trim()}</p>
+                        </div>
+                    </div>
+                `;
+                
+            } catch (error) {
+                testResults.innerHTML = `
+                    <div class="bg-red-50 border-l-4 border-red-500 p-3">
+                        <h3 class="font-semibold text-red-800 mb-2">测试失败</h3>
+                        <p class="text-red-700">错误信息: ${error.message}</p>
+                    </div>
+                `;
+                console.error('API测试失败:', error);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF截图功能测试</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-2xl font-bold mb-6 text-center">PDF截图功能测试</h1>
+        
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-lg font-semibold mb-4">上传PDF文件测试</h2>
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-blue-500 transition-colors cursor-pointer" id="fileUploadArea">
+                <i class="fa fa-file-pdf-o text-red-500 text-4xl mb-2"></i>
+                <p class="text-gray-600">点击上传PDF文件</p>
+                <input type="file" id="fileInput" class="hidden" accept=".pdf">
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-lg font-semibold mb-4">测试结果</h2>
+            <div id="testResults" class="space-y-4">
+                <p class="text-gray-500">上传PDF文件后将显示解析结果和截图</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // 初始化PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+        
+        const fileUploadArea = document.getElementById('fileUploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const testResults = document.getElementById('testResults');
+        
+        // 文件上传事件
+        fileUploadArea.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', handleFileUpload);
+        
+        async function handleFileUpload(e) {
+            const files = e.target.files;
+            if (!files.length) return;
+            
+            const file = files[0];
+            if (!file.name.endsWith('.pdf')) {
+                testResults.innerHTML = '<p class="text-red-500">请上传PDF文件</p>';
+                return;
+            }
+            
+            testResults.innerHTML = '<p class="text-blue-500"><i class="fa fa-spinner fa-spin mr-2"></i>正在解析PDF文件...</p>';
+            
+            try {
+                // 解析PDF
+                const result = await parsePDF(file);
+                
+                // 显示结果
+                let resultHTML = `
+                    <div class="mb-4">
+                        <h3 class="font-semibold text-lg mb-2">PDF解析成功！</h3>
+                        <p class="text-gray-700 mb-2">文件名: ${file.name}</p>
+                        <p class="text-gray-700 mb-2">页数: ${result.screenshots.length}</p>
+                        <p class="text-gray-700 mb-2">文本内容长度: ${result.text.length} 字符</p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h3 class="font-semibold text-lg mb-2">PDF截图预览</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                `;
+                
+                // 显示前3页截图
+                const previewPages = Math.min(3, result.screenshots.length);
+                for (let i = 0; i < previewPages; i++) {
+                    const screenshot = result.screenshots[i];
+                    resultHTML += `
+                        <div class="border border-gray-300 rounded-md p-3">
+                            <div class="text-xs text-gray-500 mb-1">第${screenshot.page}页</div>
+                            <img src="${screenshot.dataUrl}" alt="PDF第${screenshot.page}页" class="w-full h-auto object-contain cursor-pointer hover:opacity-90 transition-opacity" onclick="this.style.maxWidth = this.style.maxWidth === '100%' ? '250px' : '100%';">
+                        </div>
+                    `;
+                }
+                
+                resultHTML += '</div></div>';
+                testResults.innerHTML = resultHTML;
+                
+            } catch (error) {
+                console.error('PDF解析失败:', error);
+                testResults.innerHTML = `<p class="text-red-500">PDF解析失败：${error.message}</p>`;
+            }
+        }
+        
+        // PDF解析函数（与主程序相同）
+        async function parsePDF(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let text = '';
+            const screenshots = [];
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                
+                // 提取文本内容
+                const content = await page.getTextContent();
+                const pageText = content.items.map(item => item.str).join(' ');
+                text += pageText + '\n';
+                
+                // 生成截图
+                const screenshotDataUrl = await generatePDFPageScreenshot(page);
+                screenshots.push({
+                    page: i,
+                    dataUrl: screenshotDataUrl,
+                    text: pageText
+                });
+            }
+            
+            return {
+                text: text,
+                screenshots: screenshots
+            };
+        }
+        
+        // 生成PDF页面截图
+        async function generatePDFPageScreenshot(page) {
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            
+            const renderContext = {
+                canvasContext: context,
+                viewport: viewport
+            };
+            
+            await page.render(renderContext).promise;
+            return canvas.toDataURL('image/png');
+        }
+    </script>
+</body>
+</html>
