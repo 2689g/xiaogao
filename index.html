@@ -623,60 +623,101 @@
                     { name: "采集上架 高.docx", type: "docx", path: kbUrl("采集上架 高.docx") }
                 ];
             
-                // 根据不同环境显示相应的提示信息
+                // 根据不同环境显示相应的提示信息和处理逻辑
                 let environmentMsg = '';
                 if (isFileProtocol) {
                     environmentMsg = 'file://协议';
-                } else if (isGitHubPages) {
-                    environmentMsg = 'GitHub Pages环境';
-                } else if (isLocalhost) {
-                    environmentMsg = '本地开发环境';
+                    // file://协议下浏览器安全限制，无法使用fetch API加载本地文件
+                    addMessageToChat(`检测到当前使用${environmentMsg}，由于浏览器安全限制，无法直接加载本地知识库文件。`, 'assistant');
+                    addMessageToChat(`解决方案：`, 'assistant');
+                    addMessageToChat(`1. 推荐：使用本地服务器运行（如python -m http.server 8000）`, 'assistant');
+                    addMessageToChat(`2. 或：使用浏览器扩展解除file://协议限制`, 'assistant');
+                    addMessageToChat(`3. 或：手动上传知识库文件到聊天界面`, 'assistant');
+                    
+                    // 提供一个简单的本地服务器启动命令示例
+                    console.log('\n=== 本地服务器启动指南 ===');
+                    console.log('在项目目录下运行以下命令启动本地服务器：');
+                    console.log('  python -m http.server 8000');
+                    console.log('然后访问 http://localhost:8000 即可正常加载知识库');
+                    console.log('=========================\n');
                 } else {
-                    environmentMsg = '生产环境';
-                }
-                addMessageToChat(`检测到当前使用${environmentMsg}，正在加载本地知识库文件...`, 'assistant');
-            
-                for (const file of knowledgeFiles) {
-                    try {
-                        // 加载文件内容
-                        const response = await fetch(file.path);
-                        if (!response.ok) {
-                            console.warn(`无法加载 ${file.name}，可能是路径不正确或文件不存在`);
-                            continue;
+                    // 非file://协议，可以正常加载文件
+                    if (isGitHubPages) {
+                        environmentMsg = 'GitHub Pages环境';
+                    } else if (isLocalhost) {
+                        environmentMsg = '本地开发环境';
+                    } else {
+                        environmentMsg = '生产环境';
+                    }
+                    addMessageToChat(`检测到当前使用${environmentMsg}，正在加载本地知识库文件...`, 'assistant');
+                
+                    // 使用Promise.allSettled来并行加载所有文件，即使部分失败也能继续
+                    const loadingPromises = knowledgeFiles.map(async (file) => {
+                        try {
+                            // 添加超时控制
+                            const controller = new AbortController();
+                            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+                            
+                            // 加载文件内容
+                            const response = await fetch(file.path, { signal: controller.signal });
+                            clearTimeout(timeoutId); // 清除超时
+                            
+                            if (!response.ok) {
+                                console.warn(`无法加载 ${file.name}，可能是路径不正确或文件不存在 (状态码: ${response.status})`);
+                                return { file, success: false, error: new Error(`HTTP ${response.status}`) };
+                            }
+
+                            let content = "";
+                            let screenshots = [];
+                            
+                            if (file.type === "text") {
+                                content = await response.text();
+                            } else if (file.type === "pdf") {
+                                const arrayBuffer = await response.arrayBuffer();
+                                const result = await parsePDFFromBuffer(arrayBuffer); // 复用原PDF解析逻辑
+                                content = result.text;
+                                screenshots = result.screenshots;
+                            } else if (file.type === "docx") {
+                                const arrayBuffer = await response.arrayBuffer();
+                                content = await parseWordFromBuffer(arrayBuffer); // 复用原Word解析逻辑
+                            }
+
+                            // 加入知识库
+                            KNOWLEDGE_BASE.push({
+                                filename: file.name,
+                                content: content,
+                                screenshots: screenshots,
+                                size: formatFileSize(new Blob([content]).size),
+                                uploadTime: new Date().toLocaleString()
+                            });
+
+                            // 显示加载成功提示
+                            addMessageToChat(`已加载内置知识库：${file.name}`, 'assistant');
+                            // 添加到文件列表
+                            addFileToList({ name: file.name, size: new Blob([content]).size });
+                            
+                            return { file, success: true };
+
+                        } catch (error) {
+                            console.error(`加载内置知识库 ${file.name} 失败：`, error);
+                            // 只在控制台显示错误，不在聊天界面逐个显示，避免信息过多
+                            return { file, success: false, error };
                         }
-            
-                        let content = "";
-                        let screenshots = [];
-                        
-                        if (file.type === "text") {
-                            content = await response.text();
-                        } else if (file.type === "pdf") {
-                            const arrayBuffer = await response.arrayBuffer();
-                            const result = await parsePDFFromBuffer(arrayBuffer); // 复用原PDF解析逻辑
-                            content = result.text;
-                            screenshots = result.screenshots;
-                        } else if (file.type === "docx") {
-                            const arrayBuffer = await response.arrayBuffer();
-                            content = await parseWordFromBuffer(arrayBuffer); // 复用原Word解析逻辑
-                        }
-            
-                        // 加入知识库
-                        KNOWLEDGE_BASE.push({
-                            filename: file.name,
-                            content: content,
-                            screenshots: screenshots,
-                            size: formatFileSize(new Blob([content]).size),
-                            uploadTime: new Date().toLocaleString()
-                        });
-            
-                        // 显示加载成功提示
-                        addMessageToChat(`已加载内置知识库：${file.name}`, 'assistant');
-                        // 添加到文件列表
-                        addFileToList({ name: file.name, size: new Blob([content]).size });
-            
-                    } catch (error) {
-                        console.error(`加载内置知识库 ${file.name} 失败：`, error);
-                        addMessageToChat(`加载内置知识库 ${file.name} 失败：${error.message}`, 'assistant');
+                    });
+                    
+                    // 等待所有文件加载完成或失败
+                    const results = await Promise.allSettled(loadingPromises);
+                    
+                    // 统计成功和失败的文件数量
+                    const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+                    const failedCount = results.length - successCount;
+                    
+                    // 显示总体加载结果
+                    if (successCount > 0) {
+                        addMessageToChat(`知识库加载完成：成功加载 ${successCount} 个文件`, 'assistant');
+                    }
+                    if (failedCount > 0) {
+                        addMessageToChat(`提示：有 ${failedCount} 个文件加载失败（详情请查看浏览器控制台）`, 'assistant');
                     }
                 }
             } else {
