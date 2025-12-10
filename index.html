@@ -651,16 +651,80 @@
                     }
                     addMessageToChat(`检测到当前使用${environmentMsg}，正在加载本地知识库文件...`, 'assistant');
                 
-                    // 使用Promise.allSettled来并行加载所有文件，即使部分失败也能继续
-                    const loadingPromises = knowledgeFiles.map(async (file) => {
+                    // 优化1: 按文件类型和大小排序，优先加载轻量级文件
+                    const sortedFiles = [...knowledgeFiles].sort((a, b) => {
+                        // 优先加载text文件，然后是docx，最后是pdf
+                        const typePriority = { text: 0, docx: 1, pdf: 2 };
+                        const typeDiff = typePriority[a.type] - typePriority[b.type];
+                        if (typeDiff !== 0) return typeDiff;
+                        
+                        // 如果类型相同，按文件名长度排序（粗略估计文件大小）
+                        return a.name.length - b.name.length;
+                    });
+                    
+                    // 优化2: 实现简单的localStorage缓存
+                    const loadFromCacheOrFetch = async (file) => {
+                        // 生成缓存键
+                        const cacheKey = `kb_cache_${file.name}`;
+                        const cacheTTL = 24 * 60 * 60 * 1000; // 缓存24小时
+                        
+                        // 尝试从缓存加载
                         try {
-                            // 添加超时控制
+                            const cached = localStorage.getItem(cacheKey);
+                            if (cached) {
+                                const parsed = JSON.parse(cached);
+                                // 检查缓存是否过期
+                                if (Date.now() - parsed.timestamp < cacheTTL) {
+                                    console.log(`从缓存加载 ${file.name}`);
+                                    
+                                    // 加入知识库
+                                    KNOWLEDGE_BASE.push({
+                                        filename: file.name,
+                                        content: parsed.content,
+                                        screenshots: parsed.screenshots || [],
+                                        size: parsed.size,
+                                        uploadTime: new Date().toLocaleString()
+                                    });
+                                    
+                                    // 显示加载成功提示
+                                    addMessageToChat(`已从缓存加载内置知识库：${file.name}`, 'assistant');
+                                    // 添加到文件列表
+                                    addFileToList({ name: file.name, size: parsed.sizeBytes });
+                                    
+                                    return { file, success: true, cached: true };
+                                }
+                            }
+                        } catch (cacheError) {
+                            console.warn(`缓存加载失败 ${file.name}：`, cacheError);
+                        }
+                        
+                        // 缓存不存在或已过期，从网络加载
+                        return null;
+                    };
+                    
+                    // 先尝试从缓存加载所有文件
+                    const cacheResults = await Promise.all(sortedFiles.map(loadFromCacheOrFetch));
+                    
+                    // 收集未从缓存加载的文件
+                    const filesToFetch = sortedFiles.filter((file, index) => !cacheResults[index]?.success);
+                    
+                    // 优化3: 使用Promise.allSettled并行加载剩余文件，添加超时控制
+                    const loadingPromises = filesToFetch.map(async (file) => {
+                        try {
+                            // 添加超时控制（GitHub Pages网络可能较慢，适当延长超时时间）
+                            const timeout = isGitHubPages ? 20000 : 10000;
                             const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+                            const timeoutId = setTimeout(() => controller.abort(), timeout);
                             
                             // 加载文件内容
-                            const response = await fetch(file.path, { signal: controller.signal });
-                            clearTimeout(timeoutId); // 清除超时
+                            const response = await fetch(file.path, { 
+                                signal: controller.signal,
+                                // 优化4: 启用HTTP/2多路复用和压缩
+                                headers: {
+                                    'Accept-Encoding': 'gzip, deflate, br'
+                                }
+                            });
+                            clearTimeout(timeoutId);
                             
                             if (!response.ok) {
                                 console.warn(`无法加载 ${file.name}，可能是路径不正确或文件不存在 (状态码: ${response.status})`);
@@ -669,17 +733,25 @@
 
                             let content = "";
                             let screenshots = [];
+                            let sizeBytes = 0;
                             
                             if (file.type === "text") {
                                 content = await response.text();
+                                sizeBytes = new Blob([content]).size;
                             } else if (file.type === "pdf") {
                                 const arrayBuffer = await response.arrayBuffer();
-                                const result = await parsePDFFromBuffer(arrayBuffer); // 复用原PDF解析逻辑
+                                sizeBytes = arrayBuffer.byteLength;
+                                
+                                // 优化5: GitHub Pages环境下减少资源消耗，可选是否生成截图
+                                const result = await parsePDFFromBuffer(arrayBuffer, {
+                                    generateScreenshots: !isGitHubPages // 仅在非GitHub Pages环境下生成截图
+                                });
                                 content = result.text;
                                 screenshots = result.screenshots;
                             } else if (file.type === "docx") {
                                 const arrayBuffer = await response.arrayBuffer();
-                                content = await parseWordFromBuffer(arrayBuffer); // 复用原Word解析逻辑
+                                content = await parseWordFromBuffer(arrayBuffer);
+                                sizeBytes = new Blob([content]).size;
                             }
 
                             // 加入知识库
@@ -687,14 +759,28 @@
                                 filename: file.name,
                                 content: content,
                                 screenshots: screenshots,
-                                size: formatFileSize(new Blob([content]).size),
+                                size: formatFileSize(sizeBytes),
                                 uploadTime: new Date().toLocaleString()
                             });
+                            
+                            // 保存到缓存
+                            try {
+                                const cacheKey = `kb_cache_${file.name}`;
+                                localStorage.setItem(cacheKey, JSON.stringify({
+                                    content: content,
+                                    screenshots: screenshots,
+                                    size: formatFileSize(sizeBytes),
+                                    sizeBytes: sizeBytes,
+                                    timestamp: Date.now()
+                                }));
+                            } catch (cacheError) {
+                                console.warn(`缓存保存失败 ${file.name}：`, cacheError);
+                            }
 
                             // 显示加载成功提示
                             addMessageToChat(`已加载内置知识库：${file.name}`, 'assistant');
                             // 添加到文件列表
-                            addFileToList({ name: file.name, size: new Blob([content]).size });
+                            addFileToList({ name: file.name, size: sizeBytes });
                             
                             return { file, success: true };
 
@@ -705,16 +791,23 @@
                         }
                     });
                     
-                    // 等待所有文件加载完成或失败
-                    const results = await Promise.allSettled(loadingPromises);
+                    // 等待所有网络请求完成或失败
+                    const fetchResults = await Promise.allSettled(loadingPromises);
                     
                     // 统计成功和失败的文件数量
-                    const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
-                    const failedCount = results.length - successCount;
+                    const cacheSuccessCount = cacheResults.filter(r => r?.success).length;
+                    const fetchSuccessCount = fetchResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+                    const successCount = cacheSuccessCount + fetchSuccessCount;
+                    const failedCount = fetchResults.length - fetchSuccessCount;
                     
                     // 显示总体加载结果
                     if (successCount > 0) {
-                        addMessageToChat(`知识库加载完成：成功加载 ${successCount} 个文件`, 'assistant');
+                        let msg = `知识库加载完成：`;
+                        if (cacheSuccessCount > 0) {
+                            msg += `从缓存加载 ${cacheSuccessCount} 个文件，`;
+                        }
+                        msg += `成功加载 ${fetchSuccessCount} 个文件`;
+                        addMessageToChat(msg, 'assistant');
                     }
                     if (failedCount > 0) {
                         addMessageToChat(`提示：有 ${failedCount} 个文件加载失败（详情请查看浏览器控制台）`, 'assistant');
@@ -774,7 +867,8 @@
         }
         
         // 复用解析逻辑（新增封装）
-        async function parsePDFFromBuffer(arrayBuffer) {
+        async function parsePDFFromBuffer(arrayBuffer, options = {}) {
+            const { generateScreenshots = true } = options;
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
             let text = '';
             const screenshots = [];
@@ -787,13 +881,15 @@
                 const pageText = content.items.map(item => item.str).join(' ');
                 text += pageText + '\n';
                 
-                // 生成截图
-                const screenshotDataUrl = await generatePDFPageScreenshot(page);
-                screenshots.push({
-                    page: i,
-                    dataUrl: screenshotDataUrl,
-                    text: pageText
-                });
+                // 只有在需要时才生成截图
+                if (generateScreenshots) {
+                    const screenshotDataUrl = await generatePDFPageScreenshot(page);
+                    screenshots.push({
+                        page: i,
+                        dataUrl: screenshotDataUrl,
+                        text: pageText
+                    });
+                }
             }
             
             return {
